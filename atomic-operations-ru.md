@@ -92,6 +92,35 @@ import (
 func main() {
 	var n int32
 	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			atomic.AddInt32(&n, 1)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	fmt.Println(atomic.LoadInt32(&n)) // 1000
+}
+```
+
+Если оператор `atomic.AddInt32(&n, 1)` заменить на `n++`, то вывод может быть не `1000`.
+
+Начиная с Go 1.25, можно использовать более простой подход с методом `WaitGroup.Go()`, который автоматически вызывает `wg.Add(1)` перед запуском функции и `wg.Done()` после её завершения:
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+func main() {
+	var n int32
+	var wg sync.WaitGroup
 	for range 1000 {
 		wg.Go(func() {
 			atomic.AddInt32(&n, 1)
@@ -103,11 +132,34 @@ func main() {
 }
 ```
 
-Если оператор `atomic.AddInt32(&n, 1)` заменить на `n++`, то вывод может быть не `1000`.
+Следующий код переимплементирует вышеприведенную программу, используя тип `atomic.Int32` и его методы (начиная с Go 1.19). Этот код выглядит немного аккуратнее.
 
-Метод `wg.Go()` был добавлен в Go 1.25 и автоматически вызывает `wg.Add(1)` перед запуском функции и `wg.Done()` после её завершения, что упрощает код.
+```go
+package main
 
-Следующий код переимплементирует вышеприведенную программу, используя тип `atomic.Int32` и его методы (начиная с Go 1.19), а также современный метод `WaitGroup.Go()` (начиная с Go 1.25). Этот код выглядит еще аккуратнее.
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+func main() {
+	var n atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			n.Add(1)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	fmt.Println(n.Load()) // 1000
+}
+```
+
+И с использованием `WaitGroup.Go()` и цикла `for range` (оба добавлены в Go 1.25):
 
 ```go
 package main
