@@ -156,6 +156,31 @@ func main() {
 }
 ```
 
+Аналогично, можно использовать `WaitGroup.Go` (с Go 1.25) вместе с типом `atomic.Int32` (с Go 1.19):
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+func main() {
+	var n atomic.Int32
+	var wg sync.WaitGroup
+	for range 1000 {
+		wg.Go(func() {
+			n.Add(1)
+		})
+	}
+	wg.Wait()
+
+	fmt.Println(n.Load()) // 1000
+}
+```
+
 Атомарные функции/методы `StoreT` и `LoadT` часто используются для реализации методов setter и getter (соответствующего указательного типа) типа, если значения типа должны использоваться конкурентно. Например, версия функции:
 
 ```go
