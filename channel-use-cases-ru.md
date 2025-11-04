@@ -17,31 +17,6 @@ Futures и promises используются во многих других по
 
 В следующем примере значения двух аргументов вызова функции `sumSquares` запрашиваются конкурентно. Каждая из двух операций приема по каналу будет блокироваться до тех пор, пока операция отправки не выполнится на соответствующем канале. Для возврата окончательного результата требуется около трех секунд вместо шести.
 
-**Диаграмма параллельных запросов:**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant A as Канал a
-    participant B as Канал b
-    participant G1 as longTimeRequest() 1
-    participant G2 as longTimeRequest() 2
-    
-    Main->>G1: go longTimeRequest()
-    Main->>G2: go longTimeRequest()
-    par Параллельное выполнение
-        G1->>G1: time.Sleep(3s)
-        G1->>A: r <- rand.Int31n(100)
-    and
-        G2->>G2: time.Sleep(3s)
-        G2->>B: r <- rand.Int31n(100)
-    end
-    Main->>A: <-a (блокируется до получения)
-    Main->>B: <-b (блокируется до получения)
-    Main->>Main: sumSquares(a, b)
-    Note over Main: Результат через ~3 секунды вместо 6
-```
-
 ```go
 package main
 
@@ -133,46 +108,6 @@ func main() {
 
 Обратите внимание, если есть N источников, емкость канала связи должна быть не менее N-1, чтобы избежать блокировки навсегда горутин, соответствующих отброшенным ответам.
 
-**Диаграмма "первый ответ выигрывает":**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant C as Канал c (буфер 5)
-    participant S1 as source() 1
-    participant S2 as source() 2
-    participant S3 as source() 3
-    participant S4 as source() 4
-    participant S5 as source() 5
-    
-    Main->>S1: go source() (1-3 сек)
-    Main->>S2: go source() (1-3 сек)
-    Main->>S3: go source() (1-3 сек)
-    Main->>S4: go source() (1-3 сек)
-    Main->>S5: go source() (1-3 сек)
-    
-    par Конкурентные запросы
-        S1->>S1: Sleep(1-3s)
-        S1->>C: c <- ra
-        Note over S1: Первый ответ
-    and
-        S2->>S2: Sleep(1-3s)
-        S2->>C: c <- ra (отброшен)
-    and
-        S3->>S3: Sleep(1-3s)
-        S3->>C: c <- ra (отброшен)
-    and
-        S4->>S4: Sleep(1-3s)
-        S4->>C: c <- ra (отброшен)
-    and
-        S5->>S5: Sleep(1-3s)
-        S5->>C: c <- ra (отброшен)
-    end
-    
-    Main->>C: <-c (получает первый ответ)
-    Note over Main: Используется только первый ответ
-```
-
 ```go
 package main
 
@@ -226,30 +161,6 @@ func main() {
 Если нет значений для получения из канала, то следующая операция приема по каналу будет блокироваться до тех пор, пока другая горутина не отправит значение в канал. Таким образом, мы можем отправить значение в канал, чтобы уведомить другую горутину, которая ждет получения значения из того же канала.
 
 В следующем примере канал `done` используется в качестве сигнального канала для уведомлений.
-
-**Диаграмма синхронизации через уведомление:**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant Done as Канал done
-    participant Sort as Горутина сортировки
-    
-    Main->>Main: values = make([]byte, 32MB)
-    Main->>Sort: go func() { sort.Slice(...) }
-    
-    par Параллельное выполнение
-        Sort->>Sort: sort.Slice(values)
-        Sort->>Done: done <- struct{}{}
-        Note over Sort,Done: happens-before
-    and
-        Main->>Main: делать что-то еще...
-        Main->>Done: <-done (блокируется до уведомления)
-        Note over Done,Main: синхронизация
-        Main->>Main: print(values[0], values[len-1])
-        Note over Main: Гарантированно видит отсортированные данные
-    end
-```
 
 ```go
 package main
@@ -312,320 +223,82 @@ func main() {
 		// Имитация нагрузки.
 		time.Sleep(time.Second * 2)
 
-		// Получить значение из канала,
-		// чтобы уведомить другую горутину.
-		<-done
+		// Получить значение из канала done,
+		// чтобы разблокировать вторую отправку
+		// в главной горутине.
+		<- done
 	}()
 
-	// Выполнить операцию отправки, чтобы уведомить
-	// горутину выше.
+	// Блокируется здесь, ожидает уведомления.
 	done <- struct{}{}
 	fmt.Println(" world!")
 }
 ```
 
-### 1-ко-многим и многие-к-1 уведомления
+На самом деле, нет принципиальных различий между получением или отправкой значений для уведомлений. Оба способа можно свести к тому, что более быстрые уведомляются более медленными.
 
-Если значение будет отправлено (или получено) из канала, несколько горутин могут получать (или отправлять) значения из (или в) тот же канал, чтобы все они были уведомлены. Таким образом, мы можем использовать каналы для 1-ко-многим и многие-к-1 уведомлений.
+### N-к-1 и 1-к-N уведомления
 
-В следующем примере используется 1-ко-многим уведомление.
-
-**Диаграмма 1-ко-многим уведомления:**
-
-```mermaid
-sequenceDiagram
-    participant Signal as Сигнальная горутина
-    participant Done as Канал done
-    participant W1 as worker 0
-    participant W2 as worker 1
-    participant W3 as worker 2
-    participant W4 as worker 3
-    
-    Signal->>Signal: time.Sleep(1s)
-    Signal->>Signal: fmt.Println("done")
-    Signal->>Done: close(done)
-    Note over Signal,Done: Уведомление всех
-    
-    par Все горутины получают уведомление
-        Done->>W1: <-done (разблокируется)
-        W1->>W1: fmt.Println("worker 0")
-    and
-        Done->>W2: <-done (разблокируется)
-        W2->>W2: fmt.Println("worker 1")
-    and
-        Done->>W3: <-done (разблокируется)
-        W3->>W3: fmt.Println("worker 2")
-    and
-        Done->>W4: <-done (разблокируется)
-        W4->>W4: fmt.Println("worker 3")
-    end
-```
+Немного расширив два вышеуказанных случая использования, легко реализовать N-к-1 и 1-к-N уведомления.
 
 ```go
 package main
 
-import (
-	"time"
-	"fmt"
-)
+import "log"
+import "time"
 
-func main() {
-	done := make(chan struct{})
+type T = struct{}
 
-	// Сигнальная горутина
-	go func() {
-		time.Sleep(time.Second)
-		fmt.Println("done")
-		// Уведомить все горутины
-		close(done)
-	}()
-
-	// Рабочие горутины
-	for i := 0; i < 4; i++ {
-		go func(id int) {
-			<-done // ждать уведомления
-			fmt.Println("worker", id)
-		}(i)
-	}
-
-	time.Sleep(time.Second * 2)
-}
-```
-
-### Многие-к-1 уведомление
-
-Следующий пример демонстрирует случай многие-к-1 уведомления:
-
-**Диаграмма многие-к-1 уведомления:**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant Ready as Канал ready
-    participant Done as Канал done
-    participant W1 as worker 0
-    participant W2 as worker 1
-    participant W3 as worker 2
-    
-    Main->>W1: go worker(0)
-    Main->>W2: go worker(1)
-    Main->>W3: go worker(2)
-    
-    par Все горутины ждут сигнала готовности
-        W1->>Ready: <-ready (блокируется)
-        W2->>Ready: <-ready (блокируется)
-        W3->>Ready: <-ready (блокируется)
-    end
-    
-    Main->>Main: time.Sleep(1.5s) - инициализация
-    Main->>Ready: close(ready)
-    Note over Main,Ready: Сигнал всем одновременно
-    
-    par Все горутины запускаются
-        Ready->>W1: разблокируется
-        W1->>W1: print("worker 0 запущен")
-        W1->>W1: time.Sleep(1-5s)
-        W1->>W1: print("worker 0 завершен")
-        W1->>Done: done <- struct{}{}
-    and
-        Ready->>W2: разблокируется
-        W2->>W2: print("worker 1 запущен")
-        W2->>W2: time.Sleep(1-5s)
-        W2->>W2: print("worker 1 завершен")
-        W2->>Done: done <- struct{}{}
-    and
-        Ready->>W3: разблокируется
-        W3->>W3: print("worker 2 запущен")
-        W3->>W3: time.Sleep(1-5s)
-        W3->>W3: print("worker 2 завершен")
-        W3->>Done: done <- struct{}{}
-    end
-    
-    Main->>Done: <-done
-    Main->>Done: <-done
-    Main->>Done: <-done
-    Note over Main: Ждем завершения всех
-```
-
-```go
-package main
-
-import (
-	"fmt"
-	"time"
-	"math/rand"
-)
-
-func worker(id int, ready <-chan struct{}, done chan<- struct{}) {
-	<-ready // ждать сигнала готовности
-	fmt.Println("worker", id, "запущен")
-	time.Sleep(time.Second * time.Duration(rand.Intn(5)))
-	fmt.Println("worker", id, "завершен")
-	done <- struct{}{} // уведомить главную горутину
+func worker(id int, ready <-chan T, done chan<- T) {
+	<-ready // блокируется здесь и ждет уведомления
+	log.Print("Worker#", id, " starts.")
+	// Имитация нагрузки.
+	time.Sleep(time.Second * time.Duration(id+1))
+	log.Print("Worker#", id, " job done.")
+	// Уведомить главную горутину (N-к-1),
+	done <- T{}
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	log.SetFlags(0)
 
-	ready, done := make(chan struct{}), make(chan struct{})
+	ready, done := make(chan T), make(chan T)
 	go worker(0, ready, done)
 	go worker(1, ready, done)
 	go worker(2, ready, done)
 
-	// Симулировать операцию инициализации
+	// Симулировать фазу инициализации.
 	time.Sleep(time.Second * 3 / 2)
-	// Всем рабочим горутинам подать сигнал одновременно
-	close(ready)
-	// Ждать завершения всех рабочих горутин
-	<-done
-	<-done
-	<-done
+	// 1-к-N уведомления.
+	ready <- T{}; ready <- T{}; ready <- T{}
+	// Получение N-к-1 уведомлений.
+	<-done; <-done; <-done
 }
 ```
 
-### Таймауты и отмены
+На самом деле, способы реализации 1-к-N и N-к-1 уведомлений, представленные в этом подразделе, не используются часто на практике. На практике мы часто используем `sync.WaitGroup` для N-к-1 уведомлений, а для 1-к-N уведомлений используем закрытие каналов. Пожалуйста, прочитайте следующий подраздел для подробностей.
 
-Механизм select-case может использоваться для реализации таймаутов. Обратите внимание, что второй case делает отмену без блокировки, если операция не может быть выполнена немедленно.
+### Широковещательное (1-к-N) уведомление путем закрытия канала
+
+Способ реализации 1-к-N уведомлений, показанный в последнем подразделе, редко используется на практике, так как есть лучший способ. Используя возможность того, что из закрытого канала можно получить бесконечное количество значений, мы можем закрыть канал для широковещательных уведомлений.
+
+По примеру из последнего подраздела, мы можем заменить три операции отправки в канал `ready <- struct{}{}` в последнем примере одной операцией закрытия канала `close(ready)` для выполнения 1-к-N уведомлений.
 
 ```go
-package main
-
-import (
-	"time"
-	"errors"
-)
-
-func request() <-chan int {
-	c := make(chan int)
-	go func() {
-		// Имитация длительной операции
-		time.Sleep(time.Second * 2)
-		c <- 42
-	}()
-	return c
-}
-
-func doWithTimeout(timeout time.Duration) (int, error) {
-	select {
-	case result := <-request():
-		return result, nil
-	case <-time.After(timeout):
-		return 0, errors.New("timeout")
-	}
-}
+...
+	close(ready) // широковещательное уведомление
+...
 ```
 
-Мы можем использовать каналы для реализации отмены операций. В следующем примере канал `cancel` используется для отмены операции:
+Конечно, мы также можем закрыть канал для выполнения 1-к-1 уведомления. На самом деле, это наиболее часто используемый способ уведомления в Go.
 
-```go
-package main
+Возможность получения бесконечного количества значений из закрытого канала будет использоваться во многих других случаях использования, представленных ниже. На самом деле, эта возможность широко используется в стандартных пакетах. Например, пакет `context` использует эту возможность для подтверждения отмен.
 
-import (
-	"errors"
-)
+### Таймер: запланированное уведомление
 
-func doWithCancel(cancel <-chan struct{}) (int, error) {
-	select {
-	case result := <-request():
-		return result, nil
-	case <-cancel:
-		return 0, errors.New("отменено")
-	}
-}
-```
+Легко использовать каналы для реализации одноразовых таймеров.
 
-### Таймеры и тикеры
-
-Хотя пакет `time` предоставляет `time.Timer` и `time.Ticker`, каналы также могут использоваться для реализации таймеров и тикеров:
-
-```go
-package main
-
-import (
-	"time"
-)
-
-// Таймер
-func timer(d time.Duration) <-chan time.Time {
-	c := make(chan time.Time, 1)
-	go func() {
-		time.Sleep(d)
-		c <- time.Now()
-	}()
-	return c
-}
-
-// Тикер
-func ticker(d time.Duration) <-chan time.Time {
-	c := make(chan time.Time, 1)
-	go func() {
-		for {
-			time.Sleep(d)
-			select {
-			case c <- time.Now():
-			default:
-			}
-		}
-	}()
-	return c
-}
-```
-
-## Использование каналов для передачи данных
-
-Каналы могут использоваться для передачи данных между горутинами. Это основное использование каналов.
-
-### Точка-точка передачи данных
-
-В следующем примере показана простая передача данных точка-точка:
-
-```go
-package main
-
-import "fmt"
-
-func main() {
-	c := make(chan int)
-
-	go func() {
-		c <- 42 // отправка данных
-	}()
-
-	data := <-c // получение данных
-	fmt.Println(data)
-}
-```
-
-### Потоковая передача данных
-
-Каналы отлично подходят для потоковой передачи данных. В следующем примере показано, как использовать каналы для передачи потока чисел:
-
-```go
-package main
-
-import "fmt"
-
-func numberStream() <-chan int {
-	c := make(chan int)
-	go func() {
-		defer close(c)
-		for i := 0; i < 10; i++ {
-			c <- i
-		}
-	}()
-	return c
-}
-
-func main() {
-	for num := range numberStream() {
-		fmt.Println(num)
-	}
-}
-```
-
-### Передача токена между горутинами
-
-Каналы могут использоваться для передачи токена между несколькими горутинами. В следующем примере используется тип `Ball` для демонстрации передачи "мяча" между игроками:
+Реализация пользовательского одноразового таймера:
 
 ```go
 package main
@@ -635,342 +308,982 @@ import (
 	"time"
 )
 
-type Ball uint8
+func AfterDuration(d time.Duration) <- chan struct{} {
+	c := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(d)
+		c <- struct{}{}
+	}()
+	return c
+}
 
-func player(name string, table chan Ball) {
-	for {
-		ball := <-table
-		ball++
-		fmt.Printf("%s: %d\n", name, ball)
+func main() {
+	fmt.Println("Hi!")
+	<- AfterDuration(time.Second)
+	fmt.Println("Hello!")
+	<- AfterDuration(time.Second)
+	fmt.Println("Bye!")
+}
+```
+
+На самом деле, функция `After` в стандартном пакете `time` предоставляет ту же функциональность с гораздо более эффективной реализацией. Мы должны использовать эту функцию вместо этого, чтобы код выглядел чище.
+
+Обратите внимание, `<-time.After(aDuration)` заставит текущую горутину войти в состояние блокировки, а вызов функции `time.Sleep(aDuration)` — нет.
+
+Использование `<-time.After(aDuration)` часто применяется в механизме таймаута, который будет представлен ниже.
+
+## Использование каналов как мьютексов
+
+Один из вышеуказанных примеров упомянул, что каналы с емкостью один могут использоваться как одноразовый бинарный семафор. На самом деле, такие каналы также могут использоваться как многоразовые бинарные семафоры, то есть мьютексы, хотя такие мьютексы не так эффективны, как мьютексы, предоставляемые в стандартном пакете `sync`.
+
+Есть два способа использования каналов с емкостью один как мьютексов.
+
+1. Блокировка через отправку, разблокировка через получение.
+2. Блокировка через получение, разблокировка через отправку.
+
+Ниже приведен пример блокировки через отправку.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	// Емкость должна быть равна одному.
+	mutex := make(chan struct{}, 1)
+
+	counter := 0
+	increase := func() {
+		mutex <- struct{}{} // блокировка
+		counter++
+		<-mutex // разблокировка
+	}
+
+	increase1000 := func(done chan<- struct{}) {
+		for i := 0; i < 1000; i++ {
+			increase()
+		}
+		done <- struct{}{}
+	}
+
+	done := make(chan struct{})
+	go increase1000(done)
+	go increase1000(done)
+	<-done; <-done
+	fmt.Println(counter) // 2000
+}
+```
+
+Ниже приведен пример блокировки через получение. Он показывает только измененную часть на основе примера блокировки через отправку выше.
+
+```go
+...
+func main() {
+	mutex := make(chan struct{}, 1)
+	mutex <- struct{}{} // эта строка нужна.
+
+	counter := 0
+	increase := func() {
+		<-mutex // блокировка
+		counter++
+		mutex <- struct{}{} // разблокировка
+	}
+...
+```
+
+## Использование каналов как счетных семафоров
+
+Буферизованные каналы могут использоваться как счетные семафоры. Счетные семафоры можно рассматривать как блокировки с несколькими владельцами. Если емкость канала равна N, то его можно рассматривать как блокировку, которая может иметь максимум N владельцев в любой момент времени. Бинарные семафоры (мьютексы) — это особые счетные семафоры, каждый из которых может иметь максимум одного владельца в любой момент времени.
+
+Счетные семафоры часто используются для ограничения максимального количества конкурентных запросов.
+
+Как и при использовании каналов как мьютексов, есть также два способа получить одну единицу владения семафором канала.
+
+1. Получить владение через отправку, освободить через получение.
+2. Получить владение через получение, освободить через отправку.
+
+Пример получения владения через получение значений из канала.
+
+```go
+package main
+
+import (
+	"log"
+	"time"
+	"math/rand"
+)
+
+type Seat int
+type Bar chan Seat
+
+func (bar Bar) ServeCustomer(c int) {
+	log.Print("customer#", c, " enters the bar")
+	seat := <- bar // нужен стул, чтобы пить
+	log.Print("++ customer#", c, " drinks at seat#", seat)
+	time.Sleep(time.Second * time.Duration(2 + rand.Intn(6)))
+	log.Print("-- customer#", c, " frees seat#", seat)
+	bar <- seat // освободить стул и покинуть бар
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	// в баре 10 стульев.
+	bar24x7 := make(Bar, 10)
+	// Разместить стулья в баре.
+	for seatId := 0; seatId < cap(bar24x7); seatId++ {
+		// Ни одна из отправок не заблокируется.
+		bar24x7 <- Seat(seatId)
+	}
+
+	for customerId := 0; ; customerId++ {
 		time.Sleep(time.Second)
-		table <- ball
+		go bar24x7.ServeCustomer(customerId)
+	}
+
+	// сон != блокировка
+	for {time.Sleep(time.Second)}
+}
+```
+
+В вышеуказанном примере только клиенты, каждый из которых получил стул, могут пить. Таким образом, в любой момент времени будет максимум десять клиентов, которые пьют.
+
+Последний цикл `for` в функции `main` предназначен для предотвращения выхода программы. Есть лучший способ сделать это, который будет представлен ниже.
+
+В вышеуказанном примере, хотя в любой момент времени будет максимум десять клиентов, которые пьют, в баре одновременно может обслуживаться более десяти клиентов. Некоторые клиенты ждут свободных стульев. Хотя каждая горутина клиента потребляет гораздо меньше ресурсов, чем системный поток, общие ресурсы, потребляемые большим количеством горутин, не пренебрежимо малы. Поэтому лучше всего создавать горутину клиента только если есть доступный стул.
+
+```go
+... // тот же код, что и в примере выше
+
+func (bar Bar) ServeCustomerAtSeat(c int, seat Seat) {
+	log.Print("++ customer#", c, " drinks at seat#", seat)
+	time.Sleep(time.Second * time.Duration(2 + rand.Intn(6)))
+	log.Print("-- customer#", c, " frees seat#", seat)
+	bar <- seat // освободить стул и покинуть бар
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	bar24x7 := make(Bar, 10)
+	for seatId := 0; seatId < cap(bar24x7); seatId++ {
+		bar24x7 <- Seat(seatId)
+	}
+
+	for customerId := 0; ; customerId++ {
+		time.Sleep(time.Second)
+		// Нужен стул для обслуживания следующего клиента.
+		seat := <- bar24x7
+		go bar24x7.ServeCustomerAtSeat(customerId, seat)
+	}
+	for {time.Sleep(time.Second)}
+}
+```
+
+В вышеуказанной оптимизированной версии будет максимум около десяти живых горутин клиентов, сосуществующих одновременно (но в течение жизни программы все еще будет создаваться много горутин клиентов).
+
+В более эффективной реализации, показанной ниже, в течение жизни программы будет создано максимум десять горутин обслуживания клиентов.
+
+```go
+... // тот же код, что и в примере выше
+
+func (bar Bar) ServeCustomerAtSeat(consumers chan int) {
+	for c := range consumers {
+		seatId := <- bar
+		log.Print("++ customer#", c, " drinks at seat#", seatId)
+		time.Sleep(time.Second * time.Duration(2 + rand.Intn(6)))
+		log.Print("-- customer#", c, " frees seat#", seatId)
+		bar <- seatId // освободить стул и покинуть бар
+	}
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	bar24x7 := make(Bar, 10)
+	for seatId := 0; seatId < cap(bar24x7); seatId++ {
+		bar24x7 <- Seat(seatId)
+	}
+
+	consumers := make(chan int)
+	for i := 0; i < cap(bar24x7); i++ {
+		go bar24x7.ServeCustomerAtSeat(consumers)
+	}
+	
+	for customerId := 0; ; customerId++ {
+		time.Sleep(time.Second)
+		consumers <- customerId
+	}
+}
+```
+
+Отступление: конечно, если нам не важен идентификатор стула (что часто бывает на практике), то семафор `bar24x7` вообще не нужен:
+
+```go
+... // тот же код, что и в примере выше
+
+func ServeCustomer(consumers chan int) {
+	for c := range consumers {
+		log.Print("++ customer#", c, " drinks at the bar")
+		time.Sleep(time.Second * time.Duration(2 + rand.Intn(6)))
+		log.Print("-- customer#", c, " leaves the bar")
+	}
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	const BarSeatCount = 10
+	consumers := make(chan int)
+	for i := 0; i < BarSeatCount; i++ {
+		go ServeCustomer(consumers)
+	}
+	
+	for customerId := 0; ; customerId++ {
+		time.Sleep(time.Second)
+		consumers <- customerId
+	}
+}
+```
+
+Способ получения владения семафором через отправку сравнительно проще. Шаг размещения стульев не нужен.
+
+```go
+package main
+
+import (
+	"log"
+	"time"
+	"math/rand"
+)
+
+type Customer struct{id int}
+type Bar chan Customer
+
+func (bar Bar) ServeCustomer(c Customer) {
+	log.Print("++ customer#", c.id, " starts drinking")
+	time.Sleep(time.Second * time.Duration(3 + rand.Intn(16)))
+	log.Print("-- customer#", c.id, " leaves the bar")
+	<- bar // покинуть бар и освободить место
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	// Бар может обслуживать максимум 10 клиентов
+	// одновременно.
+	bar24x7 := make(Bar, 10)
+	for customerId := 0; ; customerId++ {
+		time.Sleep(time.Second * 2)
+		customer := Customer{customerId}
+		// Ждать, чтобы войти в бар.
+		bar24x7 <- customer
+		go bar24x7.ServeCustomer(customer)
+	}
+	for {time.Sleep(time.Second)}
+}
+```
+
+## Диалог (Ping-Pong)
+
+Две горутины могут общаться через канал. Ниже приведен пример, который будет печатать ряд чисел Фибоначчи.
+
+```go
+package main
+
+import "fmt"
+import "time"
+import "os"
+
+type Ball uint64
+
+func Play(playerName string, table chan Ball) {
+	var lastValue Ball = 1
+	for {
+		ball := <- table // получить мяч
+		fmt.Println(playerName, ball)
+		ball += lastValue
+		if ball < lastValue { // переполнение
+			os.Exit(0)
+		}
+		lastValue = ball
+		table <- ball // отбить мяч обратно
+		time.Sleep(time.Second)
 	}
 }
 
 func main() {
 	table := make(chan Ball)
-	go player("ping", table)
-	go player("pong", table)
-
-	table <- 0 // начать игру
-	time.Sleep(5 * time.Second)
-	<-table // забрать мяч, чтобы остановить игру
-}
-```
-
-В этом примере канал `table` используется для передачи "мяча" (значения типа `Ball`) между двумя игроками. Каждый игрок получает мяч, увеличивает его значение, печатает его и передает обратно в канал. Это демонстрирует, как каналы могут использоваться для координации работы между несколькими горутинами через передачу токена.
-
-## Использование каналов для ограничения конкурентности
-
-Каналы могут использоваться для ограничения количества одновременно выполняющихся операций. Это может предотвратить создание слишком большого количества горутин за раз.
-
-### Ограничение конкурентности с буферизованными каналами
-
-В следующем примере показано, как использовать буферизованный канал в качестве семафора для ограничения конкурентности:
-
-**Диаграмма ограничения конкурентности:**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant Sem as Семафор (буфер 3)
-    participant G1 as работа 0
-    participant G2 as работа 1
-    participant G3 as работа 2
-    participant G4 as работа 3
-    
-    Main->>Sem: semaphore <- struct{}{}
-    Main->>G1: go func() { работа 0 }
-    Main->>Sem: semaphore <- struct{}{}
-    Main->>G2: go func() { работа 1 }
-    Main->>Sem: semaphore <- struct{}{}
-    Main->>G3: go func() { работа 2 }
-    
-    Note over Sem: Буфер заполнен (3)
-    
-    par Максимум 3 одновременные работы
-        G1->>G1: выполнить работу
-        G1->>Sem: <-semaphore (освобождение)
-    and
-        G2->>G2: выполнить работу
-        G2->>Sem: <-semaphore (освобождение)
-    and
-        G3->>G3: выполнить работу
-        G3->>Sem: <-semaphore (освобождение)
-    end
-    
-    Main->>Sem: semaphore <- struct{}{}
-    Main->>G4: go func() { работа 3 } (теперь можно)
-    
-    Note over Main: Только 3 работы одновременно
-```
-
-```go
-package main
-
-import (
-	"fmt"
-	"time"
-)
-
-func main() {
-	const limit = 3
-	semaphore := make(chan struct{}, limit)
-
-	for i := 0; i < 10; i++ {
-		semaphore <- struct{}{} // захват семафора
-		go func(id int) {
-			defer func() { <-semaphore }() // освобождение семафора
-			// выполнить работу
-			fmt.Println("работа", id, "начата")
-			time.Sleep(time.Second)
-			fmt.Println("работа", id, "завершена")
-		}(i)
-	}
-
-	// дождаться завершения всех работ
-	for i := 0; i < limit; i++ {
-		semaphore <- struct{}{}
-	}
-}
-```
-
-В этом примере буферизованный канал `semaphore` используется как семафор с ограничением в 3 одновременных операции. Каждая горутина должна захватить семафор перед началом работы и освободить его после завершения.
-
-## Использование каналов для координации
-
-Каналы могут использоваться для координации работы между несколькими горутинами.
-
-### Барьер синхронизации
-
-Барьер синхронизации гарантирует, что все горутины достигнут определенной точки перед продолжением:
-
-```go
-package main
-
-import (
-	"fmt"
-	"time"
-)
-
-func main() {
-	const numWorkers = 3
-	barrier := make(chan struct{})
-
-	for i := 0; i < numWorkers; i++ {
-		go func(id int) {
-			// выполнить работу
-			fmt.Println("worker", id, "работает")
-			time.Sleep(time.Duration(id+1) * time.Second)
-			barrier <- struct{}{} // сигнал завершения
-		}(i)
-	}
-
-	// дождаться всех рабочих
-	for i := 0; i < numWorkers; i++ {
-		<-barrier
-	}
-	fmt.Println("все завершено")
-}
-```
-
-## Использование каналов для пулов воркеров
-
-Каналы отлично подходят для создания пулов воркеров. Пул воркеров — это паттерн, где фиксированное количество горутин обрабатывает задачи из общей очереди.
-
-### Простой пул воркеров
-
-В следующем примере показан простой пул воркеров:
-
-**Диаграмма пула воркеров:**
-
-```mermaid
-sequenceDiagram
-    participant Main as main() горутина
-    participant Jobs as Канал jobs
-    participant Results as Канал results
-    participant W1 as worker 0
-    participant W2 as worker 1
-    participant W3 as worker 2
-    
-    Main->>W1: go worker(0)
-    Main->>W2: go worker(1)
-    Main->>W3: go worker(2)
-    
-    par Все воркеры ждут задания
-        W1->>Jobs: <-jobs (блокируется)
-        W2->>Jobs: <-jobs (блокируется)
-        W3->>Jobs: <-jobs (блокируется)
-    end
-    
-    Main->>Jobs: jobs <- 1
-    Main->>Jobs: jobs <- 2
-    Main->>Jobs: jobs <- 3
-    Main->>Jobs: jobs <- 4
-    Main->>Jobs: jobs <- 5
-    Main->>Jobs: jobs <- 6
-    Main->>Jobs: jobs <- 7
-    Main->>Jobs: jobs <- 8
-    Main->>Jobs: jobs <- 9
-    Main->>Jobs: close(jobs)
-    
-    par Воркеры обрабатывают задания
-        Jobs->>W1: job = 1
-        W1->>W1: обработать job 1
-        W1->>Results: results <- 2
-        
-        Jobs->>W1: job = 4
-        W1->>W1: обработать job 4
-        W1->>Results: results <- 8
-        
-        Jobs->>W1: job = 7
-        W1->>W1: обработать job 7
-        W1->>Results: results <- 14
-    and
-        Jobs->>W2: job = 2
-        W2->>W2: обработать job 2
-        W2->>Results: results <- 4
-        
-        Jobs->>W2: job = 5
-        W2->>W2: обработать job 5
-        W2->>Results: results <- 10
-        
-        Jobs->>W2: job = 8
-        W2->>W2: обработать job 8
-        W2->>Results: results <- 16
-    and
-        Jobs->>W3: job = 3
-        W3->>W3: обработать job 3
-        W3->>Results: results <- 6
-        
-        Jobs->>W3: job = 6
-        W3->>W3: обработать job 6
-        W3->>Results: results <- 12
-        
-        Jobs->>W3: job = 9
-        W3->>W3: обработать job 9
-        W3->>Results: results <- 18
-    end
-    
-    Main->>Results: <-results (9 раз)
-    Note over Main: Получает все результаты
-```
-
-```go
-package main
-
-import (
-	"fmt"
-	"time"
-)
-
-func worker(id int, jobs <-chan int, results chan<- int) {
-	for job := range jobs {
-		// выполнить работу
-		fmt.Printf("воркер %d обрабатывает задание %d\n", id, job)
-		time.Sleep(time.Second) // имитация работы
-		result := job * 2
-		results <- result
-	}
-	fmt.Printf("воркер %d завершил работу\n", id)
-}
-
-func main() {
-	const numWorkers = 3
-	const numJobs = 9
-
-	jobs := make(chan int, numJobs)
-	results := make(chan int, numJobs)
-
-	// запустить воркеров
-	for i := 0; i < numWorkers; i++ {
-		go worker(i, jobs, results)
-	}
-
-	// отправить задания
-	for j := 1; j <= numJobs; j++ {
-		jobs <- j
-	}
-	close(jobs)
-
-	// получить результаты
-	for r := 1; r <= numJobs; r++ {
-		fmt.Println("результат:", <-results)
-	}
-}
-```
-
-## Системы потоков данных
-
-С помощью каналов очень легко создавать системы потоков данных. Обычно в системе потоков данных есть несколько модулей (воркеров), и каждый модуль выполняет определенную работу.
-
-### Генерация данных
-
-Генератор данных создает поток данных. Вот простой пример:
-
-```go
-package main
-
-import (
-	"math/rand"
-	"time"
-)
-
-func RandomGenerator() <-chan uint64 {
-	c := make(chan uint64)
 	go func() {
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		for {
-			c <- r.Uint64()
+		table <- 1 // бросить мяч на стол
+	}()
+	go Play("A:", table)
+	Play("B:", table)
+}
+```
+
+## Канал, инкапсулированный в канале
+
+Иногда мы можем использовать тип канала в качестве типа элемента другого типа канала. В следующем примере `chan chan<- int` — это тип канала, тип элемента которого является типом канала только для записи `chan<- int`.
+
+```go
+package main
+
+import "fmt"
+
+var counter = func (n int) chan<- chan<- int {
+	requests := make(chan chan<- int)
+	go func() {
+		for request := range requests {
+			if request == nil {
+				n++ // увеличить
+			} else {
+				request <- n // взять значение
+			}
 		}
 	}()
-	return c
-}
-```
 
-### Агрегация данных
+	// Неявно преобразуется в chan<- (chan<- int)
+	return requests
+}(0)
 
-Модуль агрегации объединяет несколько потоков данных в один поток. В следующем примере все значения, принятые из нескольких входных каналов, отправляются в один выходной канал:
-
-```go
-package main
-
-import (
-	"sync"
-)
-
-func Aggregator(inputs ...<-chan uint64) <-chan uint64 {
-	output := make(chan uint64)
-	var wg sync.WaitGroup
-	wg.Add(len(inputs))
-
-	for _, input := range inputs {
-		go func(in <-chan uint64) {
-			defer wg.Done()
-			for x := range in {
-				output <- x
-			}
-		}(input)
+func main() {
+	increase1000 := func(done chan<- struct{}) {
+		for i := 0; i < 1000; i++ {
+			counter <- nil
+		}
+		done <- struct{}{}
 	}
 
-	go func() {
-		wg.Wait()
-		close(output)
-	}()
+	done := make(chan struct{})
+	go increase1000(done)
+	go increase1000(done)
+	<-done; <-done
 
-	return output
+	request := make(chan int, 1)
+	counter <- request
+	fmt.Println(<-request) // 2000
 }
 ```
 
-### Дублирование данных
+Хотя здесь реализация инкапсуляции может быть не самым эффективным способом для указанного выше примера, этот случай использования может быть полезен для некоторых других сценариев.
 
-Модуль дублирования отправляет каждую часть входных данных в несколько выходных потоков. Каждая часть входных данных будет продублирована, и каждый из дублированных данных будет отправлен в разные выходные потоки данных.
+## Проверка длин и емкостей каналов
+
+Мы можем использовать встроенные функции `len` и `cap` для проверки длины и емкости канала. Однако мы редко делаем это на практике. Причина, по которой мы редко используем функцию `len` для проверки длины канала, заключается в том, что длина канала может измениться после возврата вызова функции `len`. Причина, по которой мы редко используем функцию `cap` для проверки емкости канала, заключается в том, что емкость канала часто известна или не важна.
+
+Однако есть некоторые сценарии, когда нам нужно использовать эти две функции. Например, иногда мы хотим получить все значения, буферизованные в незакрытом канале `c`, в который больше никто не будет отправлять значения, тогда мы можем использовать следующий код для получения оставшихся значений.
+
+```go
+// Предполагаем, что текущая горутина — единственная
+// горутина, которая пытается получить значения из
+// канала c в данный момент.
+for len(c) > 0 {
+	value := <-c
+	// использовать value ...
+}
+```
+
+Мы также можем использовать механизм try-receive, представленный ниже, для выполнения той же задачи. Эффективность двух способов почти одинакова. Преимущество механизма try-receive заключается в том, что текущая горутина не должна быть единственной принимающей горутиной.
+
+Иногда горутина может захотеть записать некоторые значения в буферизованный канал `c`, пока он не заполнится, не входя в состояние блокировки в конце, и горутина является единственным отправителем канала, тогда мы можем использовать следующий код для выполнения этой задачи.
+
+```go
+for len(c) < cap(c) {
+	c <- aValue
+}
+```
+
+Конечно, мы также можем использовать механизм try-send, представленный ниже, для выполнения той же задачи.
+
+## Блокировка текущей горутины навсегда
+
+Механизм `select` — это уникальная особенность Go. Он приносит множество паттернов и трюков для конкурентного программирования. О правилах выполнения кода механизма `select` пожалуйста, прочитайте статью [каналы в Go](channel-ru.md).
+
+Мы можем использовать пустой блок `select` `select{}` для блокировки текущей горутины навсегда. Это самый простой случай использования механизма `select`. На самом деле, некоторые использования `for {time.Sleep(time.Second)}` в некоторых вышеуказанных примерах могут быть заменены на `select{}`.
+
+Обычно `select{}` используется для предотвращения выхода главной горутины, так как если главная горутина выходит, вся программа также выходит.
 
 Пример:
 
 ```go
 package main
 
+import "runtime"
+
+func DoSomething() {
+	for {
+		// делать что-то ...
+
+		runtime.Gosched() // избежать жадности
+	}
+}
+
+func main() {
+	go DoSomething()
+	go DoSomething()
+	select{}
+}
+```
+
+Кстати, есть некоторые другие способы заставить горутину оставаться в состоянии блокировки навсегда. Но способ `select{}` — самый простой.
+
+## Try-Send и Try-Receive
+
+Блок `select` с одной веткой `default` и только одной веткой `case` называется операцией try-send или try-receive канала, в зависимости от того, является ли операция с каналом, следующая за ключевым словом `case`, операцией отправки или получения канала.
+
+Если операция, следующая за ключевым словом `case`, является операцией отправки, то блок `select` называется операцией try-send. Если операция отправки заблокируется, то будет выполнена ветка `default` (не удалось отправить), иначе отправка успешна и будет выполнена единственная ветка `case`.
+
+Если операция, следующая за ключевым словом `case`, является операцией получения, то блок `select` называется операцией try-receive. Если операция получения заблокируется, то будет выполнена ветка `default` (не удалось получить), иначе получение успешно и будет выполнена единственная ветка `case`.
+
+Операции try-send и try-receive никогда не блокируются.
+
+Стандартный компилятор Go делает специальные оптимизации для блоков `select` try-send и try-receive, их эффективность выполнения намного выше, чем у блоков `select` с несколькими ветками `case`.
+
+Ниже приведен пример, который показывает, как работают try-send и try-receive.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	type Book struct{id int}
+	bookshelf := make(chan Book, 3)
+
+	for i := 0; i < cap(bookshelf) * 2; i++ {
+		select {
+		case bookshelf <- Book{id: i}:
+			fmt.Println("succeeded to put book", i)
+		default:
+			fmt.Println("failed to put book")
+		}
+	}
+
+	for i := 0; i < cap(bookshelf) * 2; i++ {
+		select {
+		case book := <-bookshelf:
+			fmt.Println("succeeded to get book", book.id)
+		default:
+			fmt.Println("failed to get book")
+		}
+	}
+}
+```
+
+Вывод вышеуказанной программы:
+
+```
+succeed to put book 0
+succeed to put book 1
+succeed to put book 2
+failed to put book
+failed to put book
+failed to put book
+succeed to get book 0
+succeed to get book 1
+succeed to get book 2
+failed to get book
+failed to get book
+failed to get book
+```
+
+Следующие подразделы покажут больше случаев использования try-send и try-receive.
+
+### Проверка, закрыт ли канал, без блокировки текущей горутины
+
+Предполагая, что гарантировано, что значения никогда не были (и не будут) отправлены в канал, мы можем использовать следующий код для (конкурентной и безопасной) проверки, закрыт ли канал уже или нет, без блокировки текущей горутины, где T — тип элемента соответствующего типа канала.
+
+```go
+func IsClosed(c chan T) bool {
+	select {
+	case <-c:
+		return true
+	default:
+	}
+	return false
+}
+```
+
+Способ проверки, закрыт ли канал, широко используется в конкурентном программировании Go для проверки, пришло ли уведомление. Уведомление будет отправлено путем закрытия канала в другой горутине.
+
+### Ограничение пика/всплеска
+
+Мы можем реализовать ограничение пика, комбинируя использование каналов как счетных семафоров и try-send/try-receive. Ограничение пика (или ограничение всплеска) часто используется для ограничения количества конкурентных запросов без блокировки любых запросов.
+
+Ниже приведена модифицированная версия последнего примера в разделе использования каналов как счетных семафоров.
+
+```go
+...
+	// Может обслуживать максимум 10 клиентов одновременно
+	bar24x7 := make(Bar, 10)
+	for customerId := 0; ; customerId++ {
+		time.Sleep(time.Second)
+		customer := Consumer{customerId}
+		select {
+		case bar24x7 <- customer: // попытаться войти в бар
+			go bar24x7.ServeConsumer(customer)
+		default:
+			log.Print("customer#", customerId, " goes elsewhere")
+		}
+	}
+...
+```
+
+### Другой способ реализации случая использования "первый ответ выигрывает"
+
+Как упоминалось выше, мы можем использовать механизм `select` (try-send) с буферизованным каналом, емкость которого равна одному (по крайней мере), для реализации случая использования "первый ответ выигрывает". Например,
+
+```go
+package main
+
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
+
+func source(c chan<- int32) {
+	ra, rb := rand.Int31(), rand.Intn(3)+1
+	// Сон 1с, 2с или 3с.
+	time.Sleep(time.Duration(rb) * time.Second)
+	select {
+	case c <- ra:
+	default:
+	}
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	// Емкость должна быть не менее 1.
+	c := make(chan int32, 1)
+	for i := 0; i < 5; i++ {
+		go source(c)
+	}
+	rnd := <-c // используется только первый ответ
+	fmt.Println(rnd)
+}
+```
+
+Обратите внимание, емкость канала, используемого в вышеуказанном примере, должна быть не менее одного, чтобы первая отправка не была пропущена, если получатель/сторона запроса не готов вовремя.
+
+### Третий способ реализации случая использования "первый ответ выигрывает"
+
+Для случая использования "первый ответ выигрывает", если количество источников небольшое, например, два или три, мы можем использовать блок кода `select` для получения ответов источников одновременно. Например,
+
+```go
+package main
+
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
+
+func source() <-chan int32 {
+	// c должен быть буферизованным каналом.
+	c := make(chan int32, 1)
+	go func() {
+		ra, rb := rand.Int31(), rand.Intn(3)+1
+		time.Sleep(time.Duration(rb) * time.Second)
+		c <- ra
+	}()
+	return c
+}
+
+func main() {
+	rand.Seed(time.Now().UnixNano()) // нужно до Go 1.20
+
+	var rnd int32
+	// Блокируется здесь, пока один из источников не ответит.
+	select{
+	case rnd = <-source():
+	case rnd = <-source():
+	case rnd = <-source():
+	}
+	fmt.Println(rnd)
+}
+```
+
+Примечание: если канал, используемый в вышеуказанном примере, является небуферизованным каналом, то после выполнения блока кода `select` будут висеть навсегда две горутины. Это случай утечки памяти.
+
+Два способа, представленные в текущем и последнем подразделах, также могут использоваться для выполнения N-к-1 уведомлений.
+
+### Таймаут
+
+В некоторых сценариях запрос-ответ, по разным причинам, запрос может потребовать длительного времени для ответа, иногда даже никогда не ответит. Для таких случаев мы должны вернуть сообщение об ошибке клиентской стороне, используя решение с таймаутом. Такое решение с таймаутом может быть реализовано с помощью механизма `select`.
+
+Следующий код показывает, как сделать запрос с таймаутом.
+
+```go
+func requestWithTimeout(timeout time.Duration) (int, error) {
+	c := make(chan int)
+	// Может потребоваться длительное время для получения ответа.
+	go doRequest(c)
+
+	select {
+	case data := <-c:
+		return data, nil
+	case <-time.After(timeout):
+		return 0, errors.New("timeout")
+	}
+}
+```
+
+### Тикер
+
+Мы можем использовать механизм try-send для реализации тикера.
+
+```go
+package main
+
+import "fmt"
+import "time"
+
+func Tick(d time.Duration) <-chan struct{} {
+	// Емкость c лучше установить равной одному.
+	c := make(chan struct{}, 1)
+	go func() {
+		for {
+			time.Sleep(d)
+			select {
+			case c <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return c
+}
+
+func main() {
+	t := time.Now()
+	for range Tick(time.Second) {
+		fmt.Println(time.Since(t))
+	}
+}
+```
+
+На самом деле, в стандартном пакете `time` есть функция `Tick`, которая предоставляет ту же функциональность с гораздо более эффективной реализацией. Мы должны использовать эту функцию вместо этого, чтобы код выглядел чище и работал эффективно.
+
+### Ограничение скорости
+
+Один из вышеуказанных разделов показал, как использовать try-send для ограничения пика. Мы также можем использовать try-send для ограничения скорости (с помощью тикера). На практике ограничение скорости часто используется для избежания превышения квоты и истощения ресурсов.
+
+Ниже показан такой пример, заимствованный у jh oh из официального вики Go. В этом примере количество обработанных запросов в любую одну минуту не превысит 200.
+
+```go
+package main
+
+import "fmt"
+import "time"
+
+type Request interface{}
+func handle(r Request) {fmt.Println(r.(int))}
+
+const RateLimitPeriod = time.Minute
+const RateLimit = 200 // максимум 200 запросов за одну минуту
+
+func handleRequests(requests <-chan Request) {
+	quotas := make(chan time.Time, RateLimit)
+
+	go func() {
+		tick := time.NewTicker(RateLimitPeriod / RateLimit)
+		defer tick.Stop()
+		for t := range tick.C {
+			select {
+			case quotas <- t:
+			default:
+			}
+		}
+	}()
+
+	for r := range requests {
+		<-quotas
+		go handle(r)
+	}
+}
+
+func main() {
+	requests := make(chan Request)
+	go handleRequests(requests)
+	// time.Sleep(time.Minute)
+	for i := 0; ; i++ {requests <- i}
+}
+```
+
+На практике мы часто используем ограничение скорости и ограничение пика/всплеска вместе.
+
+## Переключатели
+
+Из статьи [каналы в Go](channel-ru.md) мы узнали, что отправка значения в или получение значения из `nil` канала являются блокирующими операциями. Используя этот факт, мы можем изменить задействованные каналы в операциях `case` блока кода `select`, чтобы повлиять на выбор ветки в блоке кода `select`.
+
+Ниже приведен еще один пример ping-pong, который реализован с использованием механизма `select`. В этом примере одна из двух переменных канала, задействованных в блоке `select`, равна `nil`. Ветка `case`, соответствующая `nil` каналу, определенно не будет выбрана. Мы можем думать, что такие ветки `case` находятся в выключенном состоянии. В конце каждого шага цикла состояния включения/выключения двух веток `case` переключаются.
+
+```go
+package main
+
+import "fmt"
+import "time"
+import "os"
+
+type Ball uint8
+func Play(playerName string, table chan Ball, serve bool) {
+	var receive, send chan Ball
+	if serve {
+		receive, send = nil, table
+	} else {
+		receive, send = table, nil
+	}
+	var lastValue Ball = 1
+	for {
+		select {
+		case send <- lastValue:
+		case value := <- receive:
+			fmt.Println(playerName, value)
+			value += lastValue
+			if value < lastValue { // переполнение
+				os.Exit(0)
+			}
+			lastValue = value
+		}
+		// Переключить включение/выключение.
+		receive, send = send, receive
+		time.Sleep(time.Second)
+	}
+}
+
+func main() {
+	table := make(chan Ball)
+	go Play("A:", table, false)
+	Play("B:", table, true)
+}
+```
+
+Ниже приведен еще один (не конкурентный) пример, который намного проще и также демонстрирует эффект переключения. Этот пример будет печатать 1212... при выполнении. Он не имеет большой полезности на практике. Он показан здесь только в целях обучения.
+
+```go
+package main
+
+import "fmt"
+import "time"
+
+func main() {
+	for c := make(chan struct{}, 1); true; {
+		select {
+		case c <- struct{}{}:
+			fmt.Print("1")
+		case <-c:
+			fmt.Print("2")
+		}
+		time.Sleep(time.Second)
+	}
+}
+```
+
+## Управление весами вероятности выполнения кода
+
+Мы можем дублировать ветку `case` в блоке кода `select`, чтобы увеличить вес вероятности выполнения соответствующего кода.
+
+Пример:
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	foo, bar := make(chan struct{}), make(chan struct{})
+	close(foo); close(bar) // для демонстрации
+	x, y := 0.0, 0.0
+	f := func(){x++}
+	g := func(){y++}
+	for i := 0; i < 100000; i++ {
+		select {
+		case <-foo: f()
+		case <-foo: f()
+		case <-bar: g()
+		}
+	}
+	fmt.Println(x/y) // около 2
+}
+```
+
+Вероятность вызова функции `f` примерно вдвое больше вероятности вызова функции `g`.
+
+## Выбор из динамического количества случаев
+
+Хотя количество веток в блоке `select` фиксировано, мы можем использовать функциональность, предоставляемую в стандартном пакете `reflect`, для построения блока `select` во время выполнения. Динамически созданный блок `select` может иметь произвольное количество веток `case`. Но обратите внимание, способ с отражением менее эффективен, чем фиксированный способ.
+
+Стандартный пакет `reflect` также предоставляет функции `TrySend` и `TryRecv` для реализации блоков `select` с одним случаем плюс `default`.
+
+## Манипуляции с потоками данных
+
+Этот раздел представит некоторые случаи использования манипуляций с потоками данных с использованием каналов.
+
+Обычно приложение потока данных состоит из многих модулей. Разные модули выполняют разную работу. Каждый модуль может иметь одного или нескольких воркеров (горутин), которые конкурентно выполняют одну и ту же работу, указанную для этого модуля. Вот список некоторых примеров работы модулей на практике:
+
+* генерация/сбор/загрузка данных.
+* обслуживание/сохранение данных.
+* вычисление/анализ данных.
+* валидация/фильтрация данных.
+* агрегация/разделение данных
+* композиция/декомпозиция данных.
+* дублирование/размножение данных.
+
+Воркер в модуле может получать данные от нескольких других модулей в качестве входных данных и отправлять данные для обслуживания других модулей в качестве выходных данных. Другими словами, модуль может быть как потребителем данных, так и производителем данных. Модуль, который только отправляет данные некоторым другим модулям, но никогда не получает данные от других модулей, называется модулем только-производитель. Модуль, который только получает данные от некоторых других модулей, но никогда не отправляет данные другим модулям, называется модулем только-потребитель.
+
+Многие модули вместе образуют систему потока данных.
+
+Ниже будут показаны некоторые реализации воркеров модулей потока данных. Эти реализации предназначены для объяснения, поэтому они очень просты и могут быть неэффективными.
+
+### Генерация/сбор/загрузка данных
+
+Есть всевозможные модули только-производители. Воркер модуля только-производителя может производить поток данных
+
+* загружая файл, читая базу данных или сканируя веб.
+* собирая всевозможные метрики из программной системы или всевозможного оборудования.
+* генерируя случайные числа.
+* и т.д.
+
+Здесь мы используем генератор случайных чисел в качестве примера. Функция генератора возвращает один результат, но не принимает параметров.
+
+```go
+import (
+	"crypto/rand"
+	"encoding/binary"
+)
+
+func RandomGenerator() <-chan uint64 {
+	c := make(chan uint64)
+	go func() {
+		rnds := make([]byte, 8)
+		for {
+			_, err := rand.Read(rnds)
+			if err != nil {
+				close(c)
+				break
+			}
+			c <- binary.BigEndian.Uint64(rnds)
+		}
+	}()
+	return c
+}
+```
+
+На самом деле, генератор случайных чисел — это future/promise с множественными возвратами.
+
+Производитель данных может закрыть выходной канал потока в любой момент, чтобы завершить генерацию данных.
+
+### Агрегация данных
+
+Воркер модуля агрегации данных объединяет несколько потоков данных одного и того же типа данных в один поток. Предполагая, что тип данных — `int64`, то следующая функция объединит произвольное количество потоков данных в один.
+
+```go
+func Aggregator(inputs ...<-chan uint64) <-chan uint64 {
+	out := make(chan uint64)
+	for _, in := range inputs {
+		go func(in <-chan uint64) {
+			for {
+				out <- <-in // <=> out <- (<-in)
+			}
+		}(in)
+	}
+	return out
+}
+```
+
+Лучшая реализация должна учитывать, был ли закрыт входной поток. (Также верно для следующих других реализаций воркеров модулей.)
+
+```go
+import "sync"
+
+func Aggregator(inputs ...<-chan uint64) <-chan uint64 {
+	output := make(chan uint64)
+	var wg sync.WaitGroup
+	for _, in := range inputs {
+		wg.Add(1)
+		go func(in <-chan uint64) {
+			defer wg.Done()
+			// Если in закрыт, то
+			// цикл в конечном итоге закончится.
+			for x := range in {
+				output <- x
+			}
+		}(in)
+	}
+	go func() {
+		wg.Wait()
+		close(output)
+	}()
+	return output
+}
+```
+
+Если количество объединенных потоков данных очень мало (два или три), мы можем использовать блок `select` для объединения этих потоков данных.
+
+```go
+// Предполагаем, что количество входных потоков равно двум.
+...
+	output := make(chan uint64)
+	go func() {
+		inA, inB := inputs[0], inputs[1]
+		for {
+			select {
+			case v := <- inA: output <- v
+			case v := <- inB: output <- v
+			}
+		}
+	}
+...
+```
+
+### Разделение данных
+
+Воркер модуля разделения данных делает противоположное воркеру модуля агрегации данных. Легко реализовать воркера разделения, но на практике воркеры разделения не очень полезны и редко используются.
+
+```go
+func Divisor(input <-chan uint64, outputs ...chan<- uint64) {
+	for _, out := range outputs {
+		go func(o chan<- uint64) {
+			for {
+				o <- <-input // <=> o <- (<-input)
+			}
+		}(out)
+	}
+}
+```
+
+### Композиция данных
+
+Воркер композиции данных объединяет несколько частей данных из разных входных потоков данных в одну часть данных.
+
+Ниже приведен пример воркера композиции, в котором два значения `uint64` из одного потока и одно значение `uint64` из другого потока составляют одно новое значение `uint64`. Конечно, типы элементов потоков каналов обычно различаются на практике.
+
+```go
+func Composer(inA, inB <-chan uint64) <-chan uint64 {
+	output := make(chan uint64)
+	go func() {
+		for {
+			a1, b, a2 := <-inA, <-inB, <-inA
+			output <- a1 ^ b & a2
+		}
+	}()
+	return output
+}
+```
+
+### Декомпозиция данных
+
+Декомпозиция данных — это обратный процесс композиции данных. Реализация функции воркера декомпозиции принимает один параметр входного потока данных и возвращает несколько результатов потоков данных. Здесь не будут показаны примеры декомпозиции данных.
+
+### Дублирование/размножение данных
+
+Дублирование (размножение) данных можно рассматривать как особые декомпозиции данных. Одна часть данных будет продублирована, и каждая из продублированных данных будет отправлена в разные выходные потоки данных.
+
+Пример:
+
+```go
 func Duplicator(in <-chan uint64) (<-chan uint64, <-chan uint64) {
 	outA, outB := make(chan uint64), make(chan uint64)
 	go func() {
@@ -985,13 +1298,11 @@ func Duplicator(in <-chan uint64) (<-chan uint64, <-chan uint64) {
 
 ### Вычисление/анализ данных
 
-Функциональность модулей вычисления и анализа данных различается, и каждая очень специфична. Обычно функция-воркер такого модуля преобразует каждую часть входных данных в другую часть выходных данных.
+Функциональность модулей вычисления и анализа данных различается, и каждая очень специфична. Обычно функция-воркер таких модулей преобразует каждую часть входных данных в другую часть выходных данных.
 
 В целях простой демонстрации здесь показан пример воркера, который инвертирует каждый бит каждого переданного значения `uint64`.
 
 ```go
-package main
-
 func Calculator(in <-chan uint64, out chan uint64) <-chan uint64 {
 	if out == nil {
 		out = make(chan uint64)
@@ -1010,8 +1321,6 @@ func Calculator(in <-chan uint64, out chan uint64) <-chan uint64 {
 Модуль валидации или фильтрации данных отбрасывает некоторые переданные данные в потоке. Например, следующая функция-воркер отбрасывает все не простые числа.
 
 ```go
-package main
-
 import "math/big"
 
 func Filter0(input <-chan uint64, output chan uint64) <-chan uint64 {
@@ -1026,7 +1335,6 @@ func Filter0(input <-chan uint64, output chan uint64) <-chan uint64 {
 				output <- x
 			}
 		}
-		close(output)
 	}()
 	return output
 }
@@ -1040,11 +1348,9 @@ func Filter(input <-chan uint64) <-chan uint64 {
 
 ### Обслуживание/сохранение данных
 
-Обычно модуль обслуживания или сохранения данных является последним или финальным выходным модулем в системе потоков данных. Здесь просто предоставлен простой воркер, который печатает каждую часть данных, полученных из входного потока.
+Обычно модуль обслуживания или сохранения данных является последним или финальным выходным модулем в системе потока данных. Здесь просто предоставлен простой воркер, который печатает каждую часть данных, полученных из входного потока.
 
 ```go
-package main
-
 import "fmt"
 
 func Printer(input <-chan uint64) {
@@ -1054,16 +1360,16 @@ func Printer(input <-chan uint64) {
 }
 ```
 
-### Сборка системы потоков данных
+### Сборка системы потока данных
 
-Теперь давайте используем вышеуказанные функции-воркеры модулей для сборки нескольких систем потоков данных. Сборка системы потоков данных — это просто создание некоторых воркеров разных модулей и указание входных потоков для каждого воркера.
+Теперь давайте используем вышеуказанные функции-воркеры модулей для сборки нескольких систем потоков данных. Сборка системы потока данных — это просто создание некоторых воркеров разных модулей и указание входных потоков для каждого воркера.
 
-Пример системы потоков данных 1 (линейный конвейер):
+Пример системы потока данных 1 (линейный конвейер):
 
 ```go
 package main
 
-// ... функции-воркеры, объявленные выше.
+... // функции-воркеры, объявленные выше.
 
 func main() {
 	Printer(
@@ -1076,26 +1382,16 @@ func main() {
 }
 ```
 
-Вышеприведенная система потоков данных представляет собой линейный конвейер, изображенный на следующей диаграмме:
+Вышеуказанная система потока данных изображена на следующей диаграмме.
 
-```mermaid
-graph LR
-    A[RandomGenerator] -->|генерация данных| B[Calculator]
-    B -->|инверсия битов| C[Filter]
-    C -->|простые числа| D[Printer]
-    
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style C fill:#e1ffe1
-    style D fill:#ffe1f5
-```
+![Линейный конвейер](https://go101.org/article/res/data-flow-linear-pipeline.png)
 
-Пример системы потоков данных 2 (направленный ациклический граф конвейер):
+Пример системы потока данных 2 (направленный ациклический граф конвейер):
 
 ```go
 package main
 
-// ... функции-воркеры, объявленные выше.
+... // функции-воркеры, объявленные выше.
 
 func main() {
 	filterA := Filter(RandomGenerator())
@@ -1109,40 +1405,13 @@ func main() {
 }
 ```
 
-Вышеприведенная система потоков данных представляет собой направленный ациклический граф (DAG), изображенный на следующей диаграмме:
+Вышеуказанная система потока данных изображена на следующей диаграмме.
 
-```mermaid
-graph TD
-    RG[RandomGenerator] -->|генерация| FA[filterA]
-    RG -->|генерация| FB[filterB]
-    RG -->|генерация| FC[filterC]
-    
-    FA -->|простые числа| AG1[Aggregator]
-    FB -->|простые числа| AG1
-    FC -->|простые числа| AG1
-    
-    AG1 -->|объединение| CA[calculatorA]
-    AG1 -->|объединение| CB[calculatorB]
-    
-    CA -->|инверсия битов| AG2[Aggregator]
-    CB -->|инверсия битов| AG2
-    
-    AG2 -->|объединение| P[Printer]
-    
-    style RG fill:#e1f5ff
-    style FA fill:#e1ffe1
-    style FB fill:#e1ffe1
-    style FC fill:#e1ffe1
-    style AG1 fill:#fff4e1
-    style CA fill:#ffe1f5
-    style CB fill:#ffe1f5
-    style AG2 fill:#fff4e1
-    style P fill:#f0e1ff
-```
+![Направленный ациклический граф конвейер](https://go101.org/article/res/data-flow-dag-pipeline.png)
 
-Более сложная топология системы потоков данных может быть произвольным графом. Например, система потоков данных может иметь несколько финальных выходов. Но системы потоков данных с топологией циклического графа редко используются в реальности.
+Более сложная топология системы потока данных может быть произвольным графом. Например, система потока данных может иметь несколько финальных выходов. Но системы потоков данных с топологией циклического графа редко используются в реальности.
 
-Из двух вышеприведенных примеров мы можем обнаружить, что очень легко и интуитивно строить системы потоков данных с каналами.
+Из двух вышеуказанных примеров мы можем обнаружить, что очень легко и интуитивно строить системы потоков данных с каналами.
 
 Из последнего примера мы можем обнаружить, что с помощью агрегаторов легко реализовать fan-in и fan-out для количества воркеров указанного модуля.
 
@@ -1151,7 +1420,7 @@ graph TD
 ```go
 package main
 
-// ... функции-воркеры, объявленные выше.
+... // функции-воркеры, объявленные выше.
 
 func main() {
 	c1 := make(chan uint64, 100)
@@ -1165,134 +1434,12 @@ func main() {
 }
 ```
 
-Модифицированная система потоков данных изображена на следующей диаграмме:
+Модифицированная система потока данных изображена на следующей диаграмме.
 
-```mermaid
-graph TD
-    RG[RandomGenerator] -->|генерация| FA[filterA]
-    RG -->|генерация| FB[filterB]
-    RG -->|генерация| FC[filterC]
-    
-    FA -->|простые числа| C1[Канал c1<br/>буфер 100]
-    FB -->|простые числа| C1
-    FC -->|простые числа| C1
-    
-    C1 -->|данные| CA[calculatorA]
-    C1 -->|данные| CB[calculatorB]
-    
-    CA -->|инверсия битов| C2[Канал c2<br/>буфер 100]
-    CB -->|инверсия битов| C2
-    
-    C2 -->|данные| P[Printer]
-    
-    style RG fill:#e1f5ff
-    style FA fill:#e1ffe1
-    style FB fill:#e1ffe1
-    style FC fill:#e1ffe1
-    style C1 fill:#fff4e1
-    style CA fill:#ffe1f5
-    style CB fill:#ffe1f5
-    style C2 fill:#fff4e1
-    style P fill:#f0e1ff
-```
+![Модифицированная система потока данных](https://go101.org/article/res/data-flow-modified-dag-pipeline.png)
 
 Вышеприведенные объяснения систем потоков данных не рассматривают много того, как закрывать потоки данных. Пожалуйста, прочитайте [эту статью](https://go101.org/article/channel-closing.html) для объяснений о том, как корректно закрывать каналы.
 
 ---
 
-## 🎯 Задания для закрепления
-
-### 🧩 Уровень 1 — Базовое взаимодействие через канал
-
-**Задача:**
-
-Напиши программу, в которой:
-- Одна горутина отправляет в канал числа от 1 до 5.
-- Другая горутина получает эти числа и печатает их.
-- После завершения отправки канал закрывается, а принимающая горутина использует `for range` для получения всех значений.
-
-**Что закрепляется:**
-
-- отправка и получение через канал;
-- закрытие канала;
-- использование `for range` для чтения до закрытия.
-
----
-
-### ⚙️ Уровень 2 — Несколько горутин и буфер
-
-**Задача:**
-
-Создай буферизованный канал ёмкостью 3.
-
-- Запусти 3 горутины-отправителя, каждая из которых пишет в канал своё имя (например, "A", "B", "C").
-- Запусти горутину-приёмник, которая читает из канала и выводит полученные значения.
-- Закрой канал после того, как все отправители завершили работу.
-
-**Что закрепляется:**
-
-- буферизованные каналы;
-- конкурентная отправка;
-- синхронизация (можно использовать `sync.WaitGroup`).
-
----
-
-### ⚡ Уровень 3 — Использование select
-
-**Задача:**
-
-Напиши программу, где две горутины каждую секунду отправляют разные сообщения в два канала:
-
-- первая — "ping",
-- вторая — "pong".
-
-Главная горутина использует `select` для получения сообщений из любого из каналов и печатает их.
-
-Если в течение 5 секунд нет ни одного сообщения — программа завершает работу.
-
-**Что закрепляется:**
-
-- `select-case` для множественных каналов;
-- обработка конкурентных событий;
-- работа с `time.After` для тайм-аутов.
-
----
-
-### 🚀 Уровень 4 — Сложная координация
-
-**Задача:**
-
-Реализуй "производитель–потребитель":
-
-- Горутина-производитель генерирует числа от 1 до 10 и отправляет их в канал.
-- Две горутины-потребителя читают эти числа через `select`, обрабатывают (например, возводят в квадрат) и выводят результат.
-- Когда все данные прочитаны — программа завершается.
-
-**Что закрепляется:**
-
-- балансировка нагрузки через канал;
-- конкурентная обработка;
-- завершение всех горутин при закрытии канала.
-
----
-
-### 🧠 Уровень 5 — Задача на понимание GC и блокировок
-
-**Задача:**
-
-Создай горутину, которая ждёт чтения из небуферизованного канала, но никто никогда не пишет в него.
-
-Посмотри, как программа "зависает" (горутина блокируется навсегда).
-
-Затем добавь `select {}` — и убедись, что главный поток тоже блокируется навсегда.
-
-**Что закрепляется:**
-
-- поведение заблокированных горутин;
-- понимание, когда канал и горутина могут быть собраны GC;
-- практика отладки зависших горутин (`go tool pprof`, `runtime.NumGoroutine()`).
-
----
-
 **Источник:** [Channel Use Cases - Go 101](https://go101.org/article/channel-use-cases.html)
-
