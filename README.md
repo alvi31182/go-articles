@@ -31,6 +31,11 @@
 - **[Range over function types в Go 1.23](range-over-function-types-ru.md)**  
   Подробно о новой поддержке `for range` по функциям, стандартных итераторах (`iter.Seq`, `iter.Seq2`), push/pull-подходах и свежих утилитах пакетов `iter`, `slices` и `maps`.
 
+### Doctrine
+
+- **[Transaction Demarcation в Doctrine ORM](doctrine-transaction-demarcation-ru.md)**  
+  Как правильно размечать границы транзакций в Doctrine ORM, чем отличаются implicit/explicit подходы, как использовать `wrapInTransaction()` и `transactional()`, а также что нужно знать про оптимистические и пессимистические блокировки.
+
 ## 🎯 О проекте
 
 Эти статьи представляют собой переводы материалов из проекта [Go 101](https://go101.org/), посвященные конкурентному программированию в Go. Все статьи переведены на русский язык, при этом примеры кода сохранены на английском, как в оригинале.

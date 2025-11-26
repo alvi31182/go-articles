@@ -1,0 +1,52 @@
+# Cursor Rules for Go Articles Project
+
+## Project Context
+This is a Go articles repository containing educational content about Go concurrency patterns, synchronization techniques, and best practices.
+
+## Code Style & Standards
+- Use Go 1.22+ standard library features
+- Follow idiomatic Go patterns and best practices
+- Prefer composition over inheritance
+- Use interfaces for abstraction
+- Always handle errors explicitly
+- Use context for cancellation and timeouts
+- Prefer `sync` package primitives for specific synchronization needs
+- Use channels for communication between goroutines
+
+## Architecture Guidelines
+- Keep code simple and readable
+- Write short, focused functions with single responsibility
+- Avoid global state; use dependency injection
+- Use defer for cleanup operations
+- Implement proper error wrapping with context
+
+## Testing
+- Write unit tests using table-driven patterns
+- Use `go test -v` for verbose test output
+- Aim for high test coverage
+
+## Documentation
+- Write clear comments for exported functions
+- Use GoDoc-style documentation
+- Include examples in code when helpful
+
+## File Structure
+- Keep examples in separate `.go` files when needed
+- Markdown files contain educational content with code examples
+- Use `go.mod` for dependency management
+
+## Concurrency Patterns
+- Prefer channels for communication between goroutines
+- Use `sync.WaitGroup` for waiting on multiple goroutines
+- Use `sync.Mutex` or `sync.RWMutex` for protecting shared state
+- Use `sync.Once` for one-time initialization
+- Use `sync.Cond` for condition-based synchronization
+
+## Agent Preferences
+- When showing code examples, extract them to runnable `.go` files
+- Explain Go concurrency concepts clearly
+- Provide working, complete examples
+- Test all code examples before including them
+
+
+
